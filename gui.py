@@ -294,9 +294,9 @@ class MainWindow(QMainWindow):
         log_group.setLayout(log_layout)
         right_splitter.addWidget(log_group)
         
-        # Set splitter proportions (Task:Gallery:Log = 3:5:2)
-        right_splitter.setStretchFactor(0, 3)
-        right_splitter.setStretchFactor(1, 5)
+        # Set splitter proportions (Task:Gallery:Log = 2:6:2)
+        right_splitter.setStretchFactor(0, 2)
+        right_splitter.setStretchFactor(1, 6)
         right_splitter.setStretchFactor(2, 2)
         
         main_layout.addWidget(right_splitter)

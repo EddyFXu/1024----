@@ -211,22 +211,41 @@ class CrawlerWorker(QThread):
             img_tags = []
             if content_div:
                 img_tags = content_div.find_all('img')
+                self.signals.log.emit(f"Found content div, {len(img_tags)} images inside.", "info")
             else:
-                # Fallback: Find all images that look like content (e.g. not icons)
-                # This is risky, but user asked for "program analysis"
+                # Fallback: Find all images that look like content
+                self.signals.log.emit("Content div not found, falling back to all images.", "warning")
                 all_imgs = soup.find_all('img')
-                # Filter out small icons/logos by src keywords or simple heuristics if possible?
-                # For now, just take them all if content_div is missing, or maybe skip known bad ones.
                 img_tags = all_imgs
             
             # Filter Image URLs
             image_urls = []
+            allowed_formats = self.config.get('formats', ['.jpg', '.png', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico', '.tiff', '.avif'])
+            
             for img in img_tags:
-                src = img.get('src')
-                if src:
-                    # Handle relative URLs
-                    abs_url = urljoin(url, src)
-                    image_urls.append(abs_url)
+                # Support lazy loading (data-src)
+                src = img.get('data-src') or img.get('src')
+                if not src:
+                    continue
+
+                # Handle relative URLs
+                abs_url = urljoin(url, src)
+                
+                # Check extension (ignoring query params)
+                try:
+                    path_part = abs_url.split('?')[0]
+                    ext = os.path.splitext(path_part)[1].lower()
+                    if not ext: ext = '.jpg'
+                    
+                    if ext in allowed_formats or '*' in allowed_formats:
+                        if abs_url not in image_urls:
+                            image_urls.append(abs_url)
+                except:
+                    pass
+            
+            self.signals.log.emit(f"Found {len(image_urls)} valid images to download.", "info")
+            if not image_urls:
+                self.signals.log.emit("No valid images found matching configuration.", "warning")
             
             # Download Images
             total_images = len(image_urls)
@@ -399,17 +418,14 @@ class CrawlerWorker(QThread):
         
         for attempt in range(max_retries):
             try:
-                # Check extension
-                ext = os.path.splitext(img_url)[1].lower()
-                if not ext: ext = '.jpg'
-                
-                # Format Check
-                allowed_formats = self.config.get('formats', ['.jpg', '.png', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico', '.tiff', '.avif'])
-                if ext not in allowed_formats and '*' not in allowed_formats:
-                    return False
-
                 # Filename Generation
-                original_filename = os.path.basename(img_url)
+                # Remove query params for filename clean
+                clean_url = img_url.split('?')[0]
+                original_filename = os.path.basename(clean_url)
+                # Check ext again for filename
+                if not os.path.splitext(original_filename)[1]:
+                     original_filename += '.jpg'
+
                 naming_pattern = self.config.get('naming_pattern', '{page.title}/{filename}')
                 save_path_template = format_filename(page_url, page_title, page_date, original_filename, index, naming_pattern)
                 
@@ -419,13 +435,15 @@ class CrawlerWorker(QThread):
                 os.makedirs(os.path.dirname(full_save_path), exist_ok=True)
                 
                 if os.path.exists(full_save_path):
-                    # Skip if exists? Or overwrite? Let's skip.
                     self.signals.log.emit(f"File exists: {full_save_path}", "info")
                     return True
 
                 self.signals.log.emit(f"Downloading {img_url} (Attempt {attempt+1}/{max_retries})...", "info")
                 resp = self.session.get(img_url, headers=headers, timeout=30, stream=True)
                 
+                if resp.status_code != 200:
+                    raise Exception(f"HTTP {resp.status_code}")
+
                 content = b""
                 for chunk in resp.iter_content(chunk_size=8192):
                     if chunk:

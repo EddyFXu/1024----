@@ -1,0 +1,7 @@
+__pycache__/
+build/
+dist/
+*.spec
+*.log
+config.json
+debug_failed_date_*.html

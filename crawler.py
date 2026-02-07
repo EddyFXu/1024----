@@ -84,7 +84,7 @@ class CrawlerWorker(QThread):
         }
 
     def process_page(self, url, mode):
-        self.signals.log.emit(f"Analyzing {url}...", "info")
+        self.signals.log.emit(f"Analyzing [v1.0.1] {url}...", "info")
         self.signals.status_update.emit(url, "running", "Analyzing...", "")
         
         try:
@@ -240,51 +240,57 @@ class CrawlerWorker(QThread):
                     if ext in allowed_formats or '*' in allowed_formats:
                         if abs_url not in image_urls:
                             image_urls.append(abs_url)
-                except:
-                    pass
+                    else:
+                        # Log first 5 rejections for debug
+                        if len(image_urls) == 0 and len(img_tags) > 0: 
+                             self.signals.log.emit(f"Debug: Rejected {abs_url} (Ext: {ext})", "warning")
+                except Exception as e:
+                    self.signals.log.emit(f"Debug: Error checking {abs_url}: {e}", "error")
             
             self.signals.log.emit(f"Found {len(image_urls)} valid images to download.", "info")
             if not image_urls:
-                self.signals.log.emit("No valid images found matching configuration.", "warning")
-            
-            # Download Images
-            total_images = len(image_urls)
-            downloaded_count = 0
-            
-            # 使用 ThreadPoolExecutor 实现并发下载
-            # 设置 max_workers=5 以达到加速效果（原单线程，现5线程，理论速度提升显著）
-            # 注意：ThreadPoolExecutor 已在文件头部导入
-            with ThreadPoolExecutor(max_workers=5) as executor:
-                # 提交任务
-                future_to_url = {
-                    executor.submit(self.download_image, img_url, url, title, page_date, idx): img_url
-                    for idx, img_url in enumerate(image_urls)
-                }
-                
-                completed_count = 0
-                for future in as_completed(future_to_url):
-                    if not self.is_running: 
-                        executor.shutdown(wait=False)
-                        break
-                    
-                    completed_count += 1
-                    # Update progress (using completed count, not index)
-                    self.signals.progress.emit(url, completed_count, total_images)
-                    
-                    try:
-                        success = future.result()
-                        if success:
-                            downloaded_count += 1
-                    except Exception as exc:
-                        self.signals.log.emit(f"Download exception: {exc}", "error")
-
-            # Status Update
-            if downloaded_count == total_images:
-                self.signals.status_update.emit(url, "success", title, date_display)
-            elif downloaded_count > 0:
+                self.signals.log.emit("No valid images found matching configuration. Check allowed formats.", "warning")
                 self.signals.status_update.emit(url, "warning", title, date_display)
+                # Do not return here, continue to navigation
             else:
-                self.signals.status_update.emit(url, "error", title, date_display)
+                # Download Images
+                total_images = len(image_urls)
+                downloaded_count = 0
+                
+                # 使用 ThreadPoolExecutor 实现并发下载
+                # 设置 max_workers=5 以达到加速效果（原单线程，现5线程，理论速度提升显著）
+                # 注意：ThreadPoolExecutor 已在文件头部导入
+                with ThreadPoolExecutor(max_workers=5) as executor:
+                    # 提交任务
+                    future_to_url = {
+                        executor.submit(self.download_image, img_url, url, title, page_date, idx): img_url
+                        for idx, img_url in enumerate(image_urls)
+                    }
+                    
+                    completed_count = 0
+                    for future in as_completed(future_to_url):
+                        if not self.is_running: 
+                            executor.shutdown(wait=False)
+                            break
+                        
+                        completed_count += 1
+                        # Update progress (using completed count, not index)
+                        self.signals.progress.emit(url, completed_count, total_images)
+                        
+                        try:
+                            success = future.result()
+                            if success:
+                                downloaded_count += 1
+                        except Exception as exc:
+                            self.signals.log.emit(f"Download exception: {exc}", "error")
+
+                # Status Update
+                if downloaded_count == total_images:
+                    self.signals.status_update.emit(url, "success", title, date_display)
+                elif downloaded_count > 0:
+                    self.signals.status_update.emit(url, "warning", title, date_display)
+                else:
+                    self.signals.status_update.emit(url, "error", title, date_display)
 
             # Navigation
             if mode == 'free':

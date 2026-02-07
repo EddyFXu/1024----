@@ -8,14 +8,14 @@ from PyQt6.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QRadioButton, QButtonGroup, 
     QCheckBox, QComboBox, QFileDialog, QTableWidget, QTableWidgetItem,
     QHeaderView, QGroupBox, QScrollArea, QSplitter, QTextEdit, QTabWidget,
-    QGridLayout, QMessageBox, QDoubleSpinBox, QSizePolicy
+    QGridLayout, QMessageBox, QDoubleSpinBox, QSizePolicy, QGraphicsBlurEffect, QStackedLayout
 )
-from PyQt6.QtCore import Qt, QSize, QTimer
-from PyQt6.QtGui import QPixmap, QIcon, QColor, QAction
+from PyQt6.QtCore import Qt, QSize, QTimer, QPointF
+from PyQt6.QtGui import QPixmap, QIcon, QColor, QAction, QPainter, QPen, QBrush, QPainterPath
 from crawler import CrawlerWorker
 from utils import get_app_path, get_resource_path
 
-VERSION = "v1.0.0"
+VERSION = "v1.0.5"
 
 # Global exception hook to capture crashes in compiled exe
 def exception_hook(exctype, value, tb):
@@ -44,6 +44,117 @@ sys.excepthook = exception_hook
 # Config file should be stored in the app directory (or user data dir, but app dir is fine for portable)
 CONFIG_FILE = os.path.join(get_app_path(), "config.json")
 
+class ImagePreviewWidget(QWidget):
+    def __init__(self):
+        super().__init__()
+        # Main layout
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Image Label
+        self.image_label = QLabel("无预览")
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setStyleSheet("background-color: #f0f0f0; border: 1px solid #ccc;")
+        self.image_label.setMinimumSize(200, 200)
+        self.main_layout.addWidget(self.image_label)
+        
+        # Blur effect
+        self.blur_effect = QGraphicsBlurEffect()
+        self.blur_effect.setBlurRadius(0) # Start clear
+        self.image_label.setGraphicsEffect(self.blur_effect)
+        
+        # Toggle Button (Floating)
+        self.toggle_btn = QPushButton(self)
+        self.toggle_btn.setFixedSize(36, 36)
+        # Use generated icons instead of text
+        self.icon_eye = self.create_eye_icon(crossed=False)
+        self.icon_crossed = self.create_eye_icon(crossed=True)
+        self.toggle_btn.setIcon(self.icon_eye)
+        self.toggle_btn.setIconSize(QSize(20, 20))
+        
+        self.toggle_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 255, 255, 120);
+                border: 1px solid rgba(255, 255, 255, 180);
+                border-radius: 18px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 200);
+                border: 1px solid rgba(255, 255, 255, 255);
+            }
+        """)
+        self.toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toggle_btn.clicked.connect(self.toggle_privacy)
+        self.toggle_btn.setToolTip("切换隐私模式 (模糊显示)")
+        
+        self.is_private = False
+        self.current_raw_pixmap = None
+        
+    def create_eye_icon(self, crossed=False):
+        pixmap = QPixmap(32, 32)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # Color: Dark Gray for visibility on light glass background
+        color = QColor("#424242")
+        pen = QPen(color)
+        pen.setWidth(2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        
+        # Draw Eye Outline (Almond shape)
+        path = QPainterPath()
+        path.moveTo(4, 16)
+        path.quadTo(16, 6, 28, 16) # Top arc
+        path.quadTo(16, 26, 4, 16) # Bottom arc
+        painter.drawPath(path)
+        
+        # Draw Pupil
+        painter.setBrush(QBrush(color))
+        painter.drawEllipse(QPointF(16, 16), 4, 4)
+        
+        if crossed:
+            # Draw Slash
+            pen.setWidth(3)
+            # Make the slash color slightly reddish or just same gray? 
+            # User dislikes "colored", so stick to monochrome/dark gray.
+            pen.setColor(QColor("#424242")) 
+            painter.setPen(pen)
+            painter.drawLine(6, 6, 26, 26)
+            
+        painter.end()
+        return QIcon(pixmap)
+        
+    def resizeEvent(self, event):
+        self.toggle_btn.move(self.width() - 46, 10)
+        self.update_display()
+        super().resizeEvent(event)
+        
+    def toggle_privacy(self):
+        self.is_private = not self.is_private
+        if self.is_private:
+            self.blur_effect.setBlurRadius(30)
+            self.toggle_btn.setIcon(self.icon_crossed)
+        else:
+            self.blur_effect.setBlurRadius(0)
+            self.toggle_btn.setIcon(self.icon_eye)
+            
+    def set_pixmap(self, pixmap):
+        self.current_raw_pixmap = pixmap
+        self.update_display()
+
+    def update_display(self):
+        if self.current_raw_pixmap and not self.current_raw_pixmap.isNull():
+            w = self.image_label.width()
+            h = self.image_label.height()
+            if w > 0 and h > 0:
+                scaled = self.current_raw_pixmap.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                self.image_label.setPixmap(scaled)
+        else:
+            self.image_label.setText("无预览")
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -57,9 +168,6 @@ class MainWindow(QMainWindow):
             
         # Status Bar
         self.status_bar = self.statusBar()
-        self.version_label = QLabel(VERSION)
-        self.version_label.setStyleSheet("padding-left: 5px; color: gray;")
-        self.status_bar.addWidget(self.version_label)
         
         self.worker = None
         self.downloaded_images = []
@@ -67,6 +175,9 @@ class MainWindow(QMainWindow):
         self.total_bytes_downloaded = 0
         self.last_bytes_value = 0
         self.last_bandwidth_time = time.time()
+        
+        self.total_tasks_count = 0
+        self.total_images_count = 0
         
         self.init_ui()
         self.load_config()
@@ -261,11 +372,8 @@ class MainWindow(QMainWindow):
         gallery_layout = QHBoxLayout() # Use HBox for better space usage in middle section
         
         # Preview Area (Left side of gallery)
-        self.preview_label = QLabel("无预览")
-        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label.setStyleSheet("background-color: #f0f0f0; border: 1px solid #ccc;")
-        self.preview_label.setMinimumSize(200, 200)
-        gallery_layout.addWidget(self.preview_label, 1)
+        self.preview_widget = ImagePreviewWidget()
+        gallery_layout.addWidget(self.preview_widget, 1)
         
         # Image List (Right side of gallery)
         self.image_list = QTableWidget()
@@ -316,8 +424,10 @@ class MainWindow(QMainWindow):
             
             formats = data.get('formats', [])
             if formats:
+                # Normalize formats to no-dot for matching keys
+                formats_no_dot = [f.lstrip('.') for f in formats]
                 for fmt, cb in self.fmt_checks.items():
-                    cb.setChecked(fmt in formats)
+                    cb.setChecked(fmt in formats_no_dot)
             
             p_min, p_max = data.get('page_delay', (2.0, 5.0))
             self.page_delay_min.setValue(p_min)
@@ -377,7 +487,7 @@ class MainWindow(QMainWindow):
             'naming': self.naming_input.text().strip(),
             'mode': ['next', 'prev', 'free'][self.nav_bg.checkedId()],
             'min_res': self.parse_resolution(),
-            'formats': [f for f, cb in self.fmt_checks.items() if cb.isChecked()],
+            'formats': [('.' + f if not f.startswith('.') else f) for f, cb in self.fmt_checks.items() if cb.isChecked()],
             'page_delay': (self.page_delay_min.value(), self.page_delay_max.value()),
             'img_delay': (self.img_delay_min.value(), self.img_delay_max.value())
         }
@@ -386,6 +496,8 @@ class MainWindow(QMainWindow):
         self.downloaded_images = []
         self.image_list.setRowCount(0)
         self.task_table.setRowCount(0)
+        self.total_tasks_count = 0
+        self.total_images_count = 0
         
         self.worker = CrawlerWorker(url, config)
         self.worker.signals.log.connect(self.log)
@@ -468,14 +580,18 @@ class MainWindow(QMainWindow):
             found_row = 0
             self.task_table.setItem(0, 1, QTableWidgetItem(url))
             
+            # Set custom row number (cumulative count)
+            self.total_tasks_count += 1
+            self.task_table.setVerticalHeaderItem(0, QTableWidgetItem(str(self.total_tasks_count)))
+            
         # Update status icon
         icon_label = QLabel()
         if status == "running":
             # Just text or a simple indicator, can't easily do spinner without gif
             self.task_table.setItem(found_row, 0, QTableWidgetItem("Running"))
             self.task_table.item(found_row, 0).setBackground(QColor("#e3f2fd"))
-        elif status == "done":
-            self.task_table.setItem(found_row, 0, QTableWidgetItem("Done"))
+        elif status == "success" or status == "done":
+            self.task_table.setItem(found_row, 0, QTableWidgetItem("Success"))
             self.task_table.item(found_row, 0).setBackground(QColor("#e8f5e9"))
             self.task_table.item(found_row, 0).setForeground(QColor("green"))
             
@@ -484,6 +600,11 @@ class MainWindow(QMainWindow):
             self.lbl_last_url.setText(f"上次成功: {url}")
             self.lbl_last_url.setToolTip(url)
             self.save_config()
+            
+        elif status == "warning":
+            self.task_table.setItem(found_row, 0, QTableWidgetItem("Warning"))
+            self.task_table.item(found_row, 0).setBackground(QColor("#fff3e0"))
+            self.task_table.item(found_row, 0).setForeground(QColor("#ef6c00"))
             
         elif status == "error":
             self.task_table.setItem(found_row, 0, QTableWidgetItem("Error"))
@@ -500,6 +621,10 @@ class MainWindow(QMainWindow):
         self.image_list.setItem(0, 0, QTableWidgetItem(os.path.basename(path)))
         self.image_list.setItem(0, 1, QTableWidgetItem(path))
         
+        # Set custom row number (cumulative count)
+        self.total_images_count += 1
+        self.image_list.setVerticalHeaderItem(0, QTableWidgetItem(str(self.total_images_count)))
+        
         # Auto preview last (which is now first)
         self.show_preview(path)
 
@@ -510,15 +635,10 @@ class MainWindow(QMainWindow):
 
     def show_preview(self, path):
         if os.path.exists(path):
-            self.current_pixmap = QPixmap(path)
-            if not self.current_pixmap.isNull():
-                # Scale to fit label
-                w = self.preview_label.width()
-                h = self.preview_label.height()
-                self.preview_label.setPixmap(self.current_pixmap.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatio))
-            else:
-                self.preview_label.setText("无法加载图片")
-                self.current_pixmap = None
+            pixmap = QPixmap(path)
+            self.preview_widget.set_pixmap(pixmap)
+        else:
+            self.preview_widget.set_pixmap(None)
 
     def parse_resolution(self):
         text = self.res_combo.currentText()
